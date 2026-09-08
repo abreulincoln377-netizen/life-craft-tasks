@@ -96,7 +96,7 @@ function Index() {
       ...f,
       categories: f.categories.includes(cat)
         ? f.categories.filter((c) => c !== cat)
-        : [...f.categories, cat],
+        : [cat],
     }));
   };
 
@@ -157,6 +157,24 @@ function Index() {
 
   const isOverdue = (t: Task) =>
     !t.done && t.deadline && t.deadline < new Date().toISOString().slice(0, 10);
+
+  const getDeadlineStatus = (t: Task) => {
+    if (t.done || !t.deadline) return null;
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const deadline = new Date(`${t.deadline}T00:00:00`);
+    const diffInDays =
+      (deadline.getTime() - today.getTime()) / (1000 * 60 * 60 * 24);
+
+    if (diffInDays < 0) return "overdue";
+    if (diffInDays === 0) return "today";
+    if (diffInDays < 2) return "soon";
+
+    return "normal";
+  };
+
 
   return (
     <div className="min-h-screen bg-background">
@@ -359,6 +377,34 @@ function Index() {
                       >
                         {task.priority}
                       </span>
+
+                      
+                        
+                    <div className="flex flex-wrap items-center gap-2">
+                      {task.deadline && (
+                        <span
+                          className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                            getDeadlineStatus(task) === "overdue"
+                              ? "bg-destructive/10 text-destructive"
+                              : getDeadlineStatus(task) === "today"
+                              ? "bg-orange-500/10 text-orange-600"
+                              : getDeadlineStatus(task) === "soon"
+                              ? "bg-yellow-500/10 text-yellow-600"
+                              : "bg-muted text-muted-foreground"
+                          }`}
+                        >
+                          <Calendar className="h-3 w-3" />
+
+                          {formatDate(task.deadline)}
+
+                          {getDeadlineStatus(task) === "overdue" && " — atrasada"}
+                          {getDeadlineStatus(task) === "today" && " — hoje"}
+                          {getDeadlineStatus(task) === "soon" && " — próxima"}
+                        </span>
+                      )}
+                    </div>
+
+
                     </div>
                     {task.content && (
                       <p className="mt-1 flex items-start gap-1.5 whitespace-pre-wrap text-sm text-muted-foreground">
@@ -366,21 +412,8 @@ function Index() {
                         {task.content}
                       </p>
                     )}
-                    <div className="mt-2 flex flex-wrap items-center gap-2">
-                      {task.deadline && (
-                        <span
-                          className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${
-                            isOverdue(task)
-                              ? "bg-destructive/10 text-destructive"
-                              : "bg-muted text-muted-foreground"
-                          }`}
-                        >
-                          <Calendar className="h-3 w-3" />
-                          {formatDate(task.deadline)}
-                          {isOverdue(task) && " — atrasada"}
-                        </span>
-                      )}
-                      {task.categories.map((cat) => (
+
+                    {task.categories.map((cat) => (
                         <span
                           key={cat}
                           className="rounded-full bg-accent px-2 py-0.5 text-[11px] font-medium text-accent-foreground"
@@ -388,7 +421,7 @@ function Index() {
                           {cat}
                         </span>
                       ))}
-                    </div>
+
                   </div>
                   <div className="flex shrink-0 gap-1 opacity-0 transition-opacity group-hover:opacity-100">
                     <button
