@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Plus,
   Trash2,
@@ -8,6 +8,8 @@ import {
   X,
   Calendar,
   AlignLeft,
+  ExternalLink,
+  Link2,
 } from "lucide-react";
 
 export const Route = createFileRoute("/")({
@@ -47,6 +49,13 @@ const PRIORITIES = ["Alta", "Média", "Baixa"] as const;
 
 type Priority = (typeof PRIORITIES)[number];
 
+interface Subtask {
+  id: string;
+  title: string;
+  done: boolean;
+  url?: string;
+}
+
 interface Task {
   id: string;
   title: string;
@@ -54,6 +63,7 @@ interface Task {
   priority: Priority;
   content: string;
   categories: string[];
+  subtasks: Subtask[];
   done: boolean;
   createdAt: number;
 }
@@ -70,13 +80,41 @@ const emptyForm = {
   priority: "Média" as Priority,
   content: "",
   categories: [] as string[],
+  subtasks: [] as Subtask[],
+};
+
+const allSubtasksDone = (subtasks: Subtask[]) =>
+  subtasks.length > 0 && subtasks.every((s) => s.done);
+
+// Aceita "site.com/pagina" ou "https://...". Retorna "" se vazio ou inválido
+// (só permite http/https, para evitar esquemas como javascript:).
+const normalizeUrl = (raw: string) => {
+  const value = raw.trim();
+  if (!value) return "";
+  const withScheme = /^[a-z][a-z0-9+.-]*:/i.test(value) ? value : `https://${value}`;
+  try {
+    const u = new URL(withScheme);
+    return u.protocol === "http:" || u.protocol === "https:" ? u.toString() : "";
+  } catch {
+    return "";
+  }
+};
+
+const linkLabel = (url: string) => {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
 };
 
 function Index() {
   const [tasks, setTasks] = useState<Task[]>(() => {
     try {
       const raw = localStorage.getItem("tasks");
-      return raw ? (JSON.parse(raw) as Task[]) : [];
+      return raw
+        ? (JSON.parse(raw) as Task[]).map((t) => ({ ...t, subtasks: t.subtasks ?? [] }))
+        : [];
     } catch {
       return [];
     }
@@ -86,6 +124,28 @@ function Index() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [filterCategory, setFilterCategory] = useState<string>("Todas");
   const [showDone, setShowDone] = useState(true);
+  const [newSubtask, setNewSubtask] = useState("");
+  const [newSubtaskLink, setNewSubtaskLink] = useState("");
+  const linkInvalid = newSubtaskLink.trim() !== "" && !normalizeUrl(newSubtaskLink);
+  const linkInputRef = useRef<HTMLInputElement>(null);
+
+  // "Título;link" no campo de título: o que vem antes do ";" fica como título
+  // e o que vem depois vai para o campo de link (o ";" é removido).
+  const handleSubtaskTitleChange = (value: string) => {
+    const idx = value.indexOf(";");
+    if (idx === -1) {
+      setNewSubtask(value);
+      return;
+    }
+    const link = value.slice(idx + 1).trim();
+    setNewSubtask(value.slice(0, idx).trimEnd());
+    if (link) {
+      setNewSubtaskLink(link);
+    } else {
+      // Digitou só o ";": passa o foco para o campo de link
+      linkInputRef.current?.focus();
+    }
+  };
 
   useEffect(() => {
     localStorage.setItem("tasks", JSON.stringify(tasks));
@@ -100,17 +160,63 @@ function Index() {
     }));
   };
 
+  const addSubtask = () => {
+    const title = newSubtask.trim();
+    if (!title || linkInvalid) return;
+    const url = normalizeUrl(newSubtaskLink);
+    setForm((f) => ({
+      ...f,
+      subtasks: [
+        ...f.subtasks,
+        { id: crypto.randomUUID(), title, done: false, ...(url ? { url } : {}) },
+      ],
+    }));
+    setNewSubtask("");
+    setNewSubtaskLink("");
+  };
+
+  const removeSubtask = (id: string) => {
+    setForm((f) => ({ ...f, subtasks: f.subtasks.filter((s) => s.id !== id) }));
+  };
+
   const saveTask = () => {
-    if (!form.title.trim()) return;
+    if (!form.title.trim() || linkInvalid) return;
+    // Se sobrou texto digitado no campo de subtarefa, inclui antes de salvar
+    const pending = newSubtask.trim();
+    const pendingUrl = normalizeUrl(newSubtaskLink);
+    const subtasks: Subtask[] = pending
+      ? [
+          ...form.subtasks,
+          {
+            id: crypto.randomUUID(),
+            title: pending,
+            done: false,
+            ...(pendingUrl ? { url: pendingUrl } : {}),
+          },
+        ]
+      : form.subtasks;
+
     if (editingId) {
       setTasks((ts) =>
-        ts.map((t) => (t.id === editingId ? { ...t, ...form, title: form.title.trim() } : t)),
+        ts.map((t) =>
+          t.id === editingId
+            ? {
+                ...t,
+                ...form,
+                subtasks,
+                title: form.title.trim(),
+                // Com subtarefas, o status da tarefa acompanha elas
+                done: subtasks.length > 0 ? allSubtasksDone(subtasks) : t.done,
+              }
+            : t,
+        ),
       );
     } else {
       setTasks((ts) => [
         {
           id: crypto.randomUUID(),
           ...form,
+          subtasks,
           title: form.title.trim(),
           done: false,
           createdAt: Date.now(),
@@ -119,8 +225,34 @@ function Index() {
       ]);
     }
     setForm(emptyForm);
+    setNewSubtask("");
+    setNewSubtaskLink("");
     setEditingId(null);
     setShowForm(false);
+  };
+
+  const toggleTask = (id: string) => {
+    setTasks((ts) =>
+      ts.map((t) => {
+        if (t.id !== id) return t;
+        const done = !t.done;
+        // Marcar/desmarcar a tarefa aplica o mesmo estado a todas as subtarefas
+        return { ...t, done, subtasks: t.subtasks.map((s) => ({ ...s, done })) };
+      }),
+    );
+  };
+
+  const toggleSubtask = (taskId: string, subtaskId: string) => {
+    setTasks((ts) =>
+      ts.map((t) => {
+        if (t.id !== taskId) return t;
+        const subtasks = t.subtasks.map((s) =>
+          s.id === subtaskId ? { ...s, done: !s.done } : s,
+        );
+        // Todas concluídas => tarefa concluída; qualquer pendente => tarefa reaberta
+        return { ...t, subtasks, done: allSubtasksDone(subtasks) };
+      }),
+    );
   };
 
   const startEdit = (task: Task) => {
@@ -130,7 +262,10 @@ function Index() {
       priority: task.priority,
       content: task.content,
       categories: task.categories,
+      subtasks: task.subtasks,
     });
+    setNewSubtask("");
+    setNewSubtaskLink("");
     setEditingId(task.id);
     setShowForm(true);
   };
@@ -255,6 +390,91 @@ function Index() {
                 />
               </div>
               <div>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                  Subtarefas
+                </label>
+                {form.subtasks.length > 0 && (
+                  <ul className="mb-2 space-y-1.5">
+                    {form.subtasks.map((s) => (
+                      <li
+                        key={s.id}
+                        className="flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-1.5 text-sm"
+                      >
+                        <span
+                          className={`min-w-0 flex-1 break-words ${
+                            s.done ? "text-muted-foreground line-through" : ""
+                          }`}
+                        >
+                          {s.title}
+                        </span>
+                        {s.url && (
+                          <span className="flex max-w-[160px] shrink-0 items-center gap-1 text-xs text-muted-foreground">
+                            <Link2 className="h-3 w-3 shrink-0" />
+                            <span className="truncate">{linkLabel(s.url)}</span>
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => removeSubtask(s.id)}
+                          aria-label="Remover subtarefa"
+                          className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <div className="flex gap-2">
+                  <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row">
+                    <input
+                      value={newSubtask}
+                      onChange={(e) => handleSubtaskTitleChange(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          addSubtask();
+                        }
+                      }}
+                      placeholder="Adicionar subtarefa e pressionar Enter"
+                      className="w-full min-w-0 rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring sm:flex-[3]"
+                    />
+                    <input
+                      ref={linkInputRef}
+                      value={newSubtaskLink}
+                      onChange={(e) => setNewSubtaskLink(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          addSubtask();
+                        }
+                      }}
+                      placeholder="Link (opcional)"
+                      aria-invalid={linkInvalid}
+                      className={`w-full min-w-0 rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:ring-2 sm:flex-[2] ${
+                        linkInvalid
+                          ? "border-destructive focus:ring-destructive"
+                          : "border-input focus:ring-ring"
+                      }`}
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={addSubtask}
+                    disabled={!newSubtask.trim() || linkInvalid}
+                    aria-label="Adicionar subtarefa"
+                    className="flex shrink-0 items-center justify-center rounded-lg border border-input bg-background px-3 text-foreground transition-colors hover:bg-muted disabled:opacity-50"
+                  >
+                    <Plus className="h-4 w-4" />
+                  </button>
+                </div>
+                {linkInvalid && (
+                  <p className="mt-1 text-xs text-destructive">
+                    Link inválido. Use um endereço http(s), ex.: https://exemplo.com
+                  </p>
+                )}
+              </div>
+              <div>
                 <label className="mb-2 block text-xs font-medium text-muted-foreground">
                   Categorias
                 </label>
@@ -277,7 +497,7 @@ function Index() {
               <div className="flex gap-2 pt-1">
                 <button
                   onClick={saveTask}
-                  disabled={!form.title.trim()}
+                  disabled={!form.title.trim() || linkInvalid}
                   className="flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
                 >
                   <Check className="h-4 w-4" /> {editingId ? "Salvar" : "Adicionar"}
@@ -287,6 +507,8 @@ function Index() {
                     setShowForm(false);
                     setEditingId(null);
                     setForm(emptyForm);
+                    setNewSubtask("");
+                    setNewSubtaskLink("");
                   }}
                   className="flex items-center gap-1.5 rounded-lg border border-input bg-background px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-muted"
                 >
@@ -349,11 +571,7 @@ function Index() {
               >
                 <div className="flex items-start gap-3">
                   <button
-                    onClick={() =>
-                      setTasks((ts) =>
-                        ts.map((t) => (t.id === task.id ? { ...t, done: !t.done } : t)),
-                      )
-                    }
+                    onClick={() => toggleTask(task.id)}
                     aria-label={task.done ? "Reabrir tarefa" : "Concluir tarefa"}
                     className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border-2 transition-colors ${
                       task.done
@@ -411,6 +629,69 @@ function Index() {
                         <AlignLeft className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                         {task.content}
                       </p>
+                    )}
+
+                    {task.subtasks.length > 0 && (
+                      <div className="mt-3">
+                        <div className="mb-1.5 flex items-center gap-2 text-[11px] font-medium text-muted-foreground">
+                          <span>
+                            Subtarefas {task.subtasks.filter((s) => s.done).length}/
+                            {task.subtasks.length}
+                          </span>
+                          <div className="h-1 max-w-[120px] flex-1 overflow-hidden rounded-full bg-muted">
+                            <div
+                              className="h-full rounded-full bg-primary transition-all"
+                              style={{
+                                width: `${
+                                  (task.subtasks.filter((s) => s.done).length /
+                                    task.subtasks.length) *
+                                  100
+                                }%`,
+                              }}
+                            />
+                          </div>
+                        </div>
+                        <ul className="space-y-1.5">
+                          {task.subtasks.map((s) => (
+                            <li key={s.id} className="flex items-start gap-2">
+                              <button
+                                onClick={() => toggleSubtask(task.id, s.id)}
+                                aria-label={
+                                  s.done ? "Reabrir subtarefa" : "Concluir subtarefa"
+                                }
+                                className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded border-2 transition-colors ${
+                                  s.done
+                                    ? "border-primary bg-primary text-primary-foreground"
+                                    : "border-input hover:border-primary"
+                                }`}
+                              >
+                                {s.done && <Check className="h-3 w-3" />}
+                              </button>
+                              <span
+                                className={`min-w-0 flex-1 break-words text-sm ${
+                                  s.done
+                                    ? "text-muted-foreground line-through"
+                                    : "text-card-foreground"
+                                }`}
+                              >
+                                {s.title}
+                              </span>
+                              {s.url && normalizeUrl(s.url) && (
+                                <a
+                                  href={normalizeUrl(s.url)}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  title={s.url}
+                                  className="ml-auto flex max-w-[160px] shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-xs font-medium text-primary transition-colors hover:bg-accent hover:underline"
+                                >
+                                  <span className="truncate">{linkLabel(s.url)}</span>
+                                  <ExternalLink className="h-3 w-3 shrink-0" />
+                                </a>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
                     )}
 
                     {task.categories.map((cat) => (
